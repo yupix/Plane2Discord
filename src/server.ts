@@ -67,7 +67,7 @@ fastify.post('/*', async (request, reply) => {
     // 1. Pythonの `request.json` に相当するよう、まずJSONとしてパース
     bodyJson = bodyText ? JSON.parse(bodyText) : {};
   } catch (e) {
-    console.warn('Failed to parse JSON body for verification:', e.message);
+    console.warn('Failed to parse JSON body for verification:', (e as Error).message);
     reply.status(400).send('Invalid JSON body');
     return;
   }
