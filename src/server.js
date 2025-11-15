@@ -1,5 +1,6 @@
 const express = require("express");
 const bodyParser = require("body-parser");
+const crypto = require('crypto');
 const axios = require("axios");
 const fs = require("fs");
 const path = require("path");
@@ -12,7 +13,89 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL; // Replace with you
 
 const LOG_FILE = path.join(__dirname, "webhook_logs.txt");
 
-app.use(bodyParser.json());
+// --- Helpers available to handlers ---
+const safe = (v) => (v === undefined || v === null || v === '') ? 'N/A' : v;
+const safeAvatar = (url) => (typeof url === 'string' && /^https?:\/\//.test(url) ? url : 'https://i.imgur.com/AfFp7pu.png');
+const buildPayload = ({ title, description, fields = [], color = 0x2f3136, timestamp, actorAvatar, footerText }) => {
+  return {
+    username: 'Monotone Development',
+    avatar_url: safeAvatar(actorAvatar),
+    content: `${title} — ${description ? description.replace(/\*\*/g, '') : ''}`.trim(),
+    embeds: [{
+      title: title,
+      description: description || undefined,
+      color: color,
+      fields: fields,
+      timestamp: timestamp || new Date().toISOString(),
+      thumbnail: { url: safeAvatar(actorAvatar) },
+      footer: { text: footerText || 'Plane2Discord' }
+    }]
+  };
+};
+
+function handleCreated(data = {}, activity = {}) {
+  const fields = [
+    { name: 'Card', value: safe(data.name), inline: true },
+    { name: 'Project', value: `ID: \`${safe(data.project)}\``, inline: true },
+    { name: 'State', value: safe(data.state?.name), inline: true },
+    { name: 'Created At', value: new Date(data.created_at || Date.now()).toLocaleString(), inline: true },
+    { name: 'Created By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
+  ];
+
+  return buildPayload({
+    title: 'New Card Created',
+    description: `**${safe(data.name)}** added to project`,
+    fields,
+    color: convertColor(data.state?.color),
+    timestamp: new Date(data.created_at).toISOString(),
+    actorAvatar: activity?.actor?.avatar_url,
+    footerText: 'Card created'
+  });
+}
+
+function handleDeleted(data = {}, activity = {}) {
+  const fields = [
+    { name: 'Card ID', value: safe(data.id), inline: true },
+    { name: 'Deleted By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
+  ];
+
+  return buildPayload({
+    title: 'Card Deleted',
+    description: `Card **${safe(data.id)}** has been deleted`,
+    fields,
+    color: 0xff4444,
+    timestamp: new Date().toISOString(),
+    actorAvatar: activity?.actor?.avatar_url,
+    footerText: 'Card removed'
+  });
+}
+
+function handleUpdated(data = {}, activity = {}) {
+  const actionDesc = getActionDescription(activity);
+  const fields = [
+    { name: 'Card', value: safe(data.name), inline: true },
+    { name: 'Change', value: actionDesc, inline: true },
+    { name: 'Project', value: `ID: \`${safe(data.project)}\``, inline: true },
+    { name: 'Updated By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
+  ];
+
+  return buildPayload({
+    title: 'Card Updated',
+    description: `**${safe(data.name)}** updated`,
+    fields,
+    color: convertColor(data.state?.color),
+    timestamp: new Date(data.updated_at || Date.now()).toISOString(),
+    actorAvatar: activity?.actor?.avatar_url,
+    footerText: 'Card updated'
+  });
+}
+
+// Capture raw body for signature verification
+app.use(bodyParser.json({
+  verify: function (req, res, buf) {
+    req.rawBody = buf;
+  }
+}));
 
 app.post("/webhook", async (req, res) => {
   const logEntry = `
@@ -36,93 +119,49 @@ Body: ${JSON.stringify(req.body, null, 2)}
     return res.status(500).send('DISCORD_WEBHOOK_URL not configured');
   }
 
+  // Signature verification using WEBHOOK_SECRET (HMAC-SHA256)
+  const webhookSecret = process.env.WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    console.error('WEBHOOK_SECRET is not set. Refusing to accept unsigned requests.');
+    return res.status(500).send('WEBHOOK_SECRET not configured');
+  }
+
+  const receivedSignature = req.headers['x-plane-signature'] || req.headers['X-Plane-Signature'];
+  if (!receivedSignature) {
+    console.warn('Missing X-Plane-Signature header');
+    return res.status(403).send('Missing signature');
+  }
+
+  try {
+    // expected: hex digest of HMAC-SHA256 over the raw payload
+    const expectedHmac = crypto.createHmac('sha256', webhookSecret).update(req.rawBody || Buffer.from(JSON.stringify(req.body))).digest();
+    const receivedBuf = Buffer.from(String(receivedSignature).trim(), 'hex');
+
+    // Timing-safe comparison; lengths must match
+    if (receivedBuf.length !== expectedHmac.length || !crypto.timingSafeEqual(expectedHmac, receivedBuf)) {
+      console.warn('Invalid signature provided');
+      return res.status(403).send('Invalid signature');
+    }
+  } catch (err) {
+    console.error('Error verifying signature:', err && err.message ? err.message : err);
+    return res.status(403).send('Invalid signature');
+  }
+
   try {
     const { action, data, activity } = req.body;
 
-    // Helpers to build a clear, safe Discord payload
-    const safe = (v) => (v === undefined || v === null || v === '') ? 'N/A' : v;
-    const safeAvatar = (url) => (typeof url === 'string' && /^https?:\/\//.test(url) ? url : 'https://i.imgur.com/AfFp7pu.png');
-    const buildPayload = ({ title, description, fields = [], color = 0x2f3136, timestamp, actorAvatar, footerText }) => {
-      return {
-        username: 'Monotone Development',
-        avatar_url: safeAvatar(actorAvatar),
-        content: `${title} — ${description ? description.replace(/\*\*/g, '') : ''}`.trim(),
-        embeds: [{
-          title: title,
-          description: description || undefined,
-          color: color,
-          fields: fields,
-          timestamp: timestamp || new Date().toISOString(),
-          thumbnail: { url: safeAvatar(actorAvatar) },
-          footer: { text: footerText || 'Plane2Discord' }
-        }]
-      };
-    };
-
-    // Handle different actions with clearer embeds
+    // Dispatch to per-action handlers for clarity
     let discordMessage;
     switch (action) {
-      case 'created': {
-        const fields = [
-          { name: 'Card', value: safe(data.name), inline: true },
-          { name: 'Project', value: `ID: \`${safe(data.project)}\``, inline: true },
-          { name: 'State', value: safe(data.state?.name), inline: true },
-          { name: 'Created At', value: new Date(data.created_at || Date.now()).toLocaleString(), inline: true },
-          { name: 'Created By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
-        ];
-
-        discordMessage = buildPayload({
-          title: 'New Card Created',
-          description: `**${safe(data.name)}** added to project`,
-          fields,
-          color: convertColor(data.state?.color),
-          timestamp: new Date(data.created_at).toISOString(),
-          actorAvatar: activity?.actor?.avatar_url,
-          footerText: 'Card created'
-        });
-      }
+      case 'created':
+        discordMessage = handleCreated(data, activity);
         break;
-
-      case 'deleted': {
-        const fields = [
-          { name: 'Card ID', value: safe(data.id), inline: true },
-          { name: 'Deleted By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
-        ];
-
-        discordMessage = buildPayload({
-          title: 'Card Deleted',
-          description: `Card **${safe(data.id)}** has been deleted`,
-          fields,
-          color: 0xff4444,
-          timestamp: new Date().toISOString(),
-          actorAvatar: activity?.actor?.avatar_url,
-          footerText: 'Card removed'
-        });
-      }
+      case 'deleted':
+        discordMessage = handleDeleted(data, activity);
         break;
-
-      case 'updated': {
-        // Provide a helpful summary when state changed or other known fields
-        const actionDesc = getActionDescription(activity);
-        const fields = [
-          { name: 'Card', value: safe(data.name), inline: true },
-          { name: 'Change', value: actionDesc, inline: true },
-          { name: 'Project', value: `ID: \`${safe(data.project)}\``, inline: true },
-          { name: 'Updated By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
-        ];
-
-        discordMessage = buildPayload({
-          title: 'Card Updated',
-          description: `**${safe(data.name)}** updated`,
-          fields,
-          color: convertColor(data.state?.color),
-          timestamp: new Date(data.updated_at || Date.now()).toISOString(),
-          actorAvatar: activity?.actor?.avatar_url,
-          footerText: 'Card updated'
-        });
-      }
+      case 'updated':
+        discordMessage = handleUpdated(data, activity);
         break;
-
       default:
         console.log(`Unhandled action: ${action}`);
         return res.sendStatus(200);
