@@ -1,0 +1,9 @@
+{
+  "tasks": {
+    "start": "deno run --allow-net --allow-read --allow-env --allow-write --allow-sys --env-file src/server.ts",
+    "dev": "deno run --allow-net --allow-read --allow-env --allow-write --allow-sys --env-file --watch src/server.ts"
+  },
+  "nodeModulesDir": "auto",
+  "fmt": {},
+  "lint": {}
+}

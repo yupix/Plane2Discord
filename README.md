@@ -14,7 +14,7 @@ Feel free to contribute!
 ✅ Logging for debugging  
 
 ## Requirements
-- Node.js 18+
+- Deno 1.30+ (or recent)
 - Discord webhook URL
 
 ## Examples
@@ -28,17 +28,31 @@ Feel free to contribute!
 git clone https://github.com/znimator/plane2discord.git
 cd plane2discord
 ```
-2. **Install dependencies**
-```
-npm install
-```
-3. **Create `.env` file**
-```
+2. **Run with Deno**
+
+Create a `.env` file with your settings (or set environment variables in your environment):
+
+```env
 DISCORD_WEBHOOK_URL=your-discord-webhook-url
+WEBHOOK_SECRET=your-webhook-secret
 ```
-4. **Start the server**
+
+Start in development (auto-reload):
+
+```bash
+deno task dev
 ```
-node run dev
+
+Or run the server directly:
+
+```bash
+deno task start
+```
+
+Note: The server appends logs to disk, so the run commands include the write permission. If you run `deno run` manually, include `--allow-write` along with the other flags:
+
+```bash
+deno run --allow-net --allow-read --allow-env --allow-write src/server.ts
 ```
 5. **Request particual subdomain**
 Using Serveo as example

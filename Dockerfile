@@ -1,21 +1,16 @@
-FROM node:18-alpine
+FROM denoland/deno:alpine-1.37.1
 
 # Create app directory
-WORKDIR /usr/src/app
-
-# Install dependencies from package.json
-# We use --production to keep the image small. If you need dev deps, remove --production.
-COPY package.json ./
-RUN npm install --production --no-audit --no-fund
+WORKDIR /app
 
 # Copy source
 COPY . .
 
-# Environment
-ENV NODE_ENV=production
+# Set environment defaults
+ENV PORT=3000
 
-# Port the app listens on
+# Expose port
 EXPOSE 3000
 
-# Use the npm start script defined in package.json
-CMD ["npm", "start"]
+# Run the Deno server with required permissions
+CMD ["run", "--allow-net", "--allow-read", "--allow-env", "--allow-write", "src/server.ts"]
