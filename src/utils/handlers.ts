@@ -1,5 +1,5 @@
 import { WebhookBody, User, Activity } from "../types";
-
+import { APIEmbed } from "discord-api-types/v10";
 import { planeClient } from "./plane";
 import { env } from '../env';
 
@@ -58,7 +58,7 @@ export async function handleCreated(
       const file_url = getActorAvatar(payload.activity?.actor)!;
       console.log(file_url);
 
-    const embed: Record<string, unknown> = {
+    const embed: APIEmbed = {
         title: payload.data.name,
         // url:
         description: payload.data.description_stripped,
@@ -71,12 +71,23 @@ export async function handleCreated(
       }
 
       return {embeds: [embed]};
-      break;
     }
     case "issue_comment":
       {
-        payload.data;
-        break;
+        const project = await planeClient.projects.retrieve(
+        payload.workspace_id,
+        payload.data.project,
+      );
+        const workItem = await planeClient.workItems.retrieve(
+        payload.workspace_id,
+        payload.data.project,
+        payload.data.issue,
+      );
+        const embed: APIEmbed = {
+          title: `[${payload.workspace_id} ] New comment on issue #${project.identifier}-${workItem.sequence_id}: ${workItem.name}`,
+          description: payload.data.comment_stripped,
+        };
+        return {embeds: [embed]};
       }
 
     default:
