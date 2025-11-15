@@ -8,7 +8,7 @@ WORKDIR /app
 WORKDIR /app
 
 # Copy package manifests first for better caching
-COPY package.json pnpm-lock.yaml tsconfig.json ./
+COPY package.json tsconfig.json ./
 
 # Install dependencies (including dev deps for build)
 RUN bun install --production
