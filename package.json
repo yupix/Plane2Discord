@@ -9,7 +9,6 @@
     "dev": "bun --watch src/server.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.932.0",
     "@makeplane/plane-node-sdk": "^0.2.0",
     "@t3-oss/env-core": "0.13.8",
     "discord-api-types": "^0.38.33",

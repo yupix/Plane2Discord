@@ -17,7 +17,6 @@ console.log('env check:', {
   DISCORD_WEBHOOK_URL: !!DISCORD_WEBHOOK_URL,
   WEBHOOK_SECRET: !!process.env.WEBHOOK_SECRET,
   PLANE_API_KEY: !!process.env.PLANE_API_KEY,
-  S3_CONFIGURED: !!(process.env.S3_BUCKET_NAME && process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY),
 });
 
 /**
