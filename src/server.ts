@@ -48,7 +48,7 @@ fastify.post('/*', async (request, reply) => {
   const bodyText = new TextDecoder().decode(rawBuf || new Uint8Array());
 
   // webhook signature verification
-  const webhookSecret = process.env.WEBHOOK_SECRET;
+  const webhookSecret = env.WEBHOOK_SECRET;
   if (!webhookSecret) {
     console.error('WEBHOOK_SECRET is not set. Refusing to accept unsigned requests.');
     reply.status(500).send('WEBHOOK_SECRET not configured');
