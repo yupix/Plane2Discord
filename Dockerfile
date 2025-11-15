@@ -1,4 +1,5 @@
-FROM denoland/deno:alpine-1.37.1
+# Use the latest Deno Alpine image to ensure lockfile compatibility
+FROM denoland/deno:alpine
 
 # Use /app as working directory
 WORKDIR /app
