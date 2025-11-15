@@ -42,7 +42,8 @@ async function readRawBuffer(req: any): Promise<Uint8Array> {
 
 const fastify = Fastify();
 
-fastify.post('/*', async (request, reply) => {
+// Central handler used for multiple route patterns
+async function handleWebhook(request: any, reply: any) {
   const rawBuf = await readRawBuffer(request);
   const headersObj = Object.fromEntries(Object.entries(request.headers).map(([k, v]) => [k, String(v || '')])) as Record<string, string>;
   const bodyText = new TextDecoder().decode(rawBuf || new Uint8Array());
@@ -64,35 +65,12 @@ fastify.post('/*', async (request, reply) => {
 
   let bodyJson: unknown = {};
   try {
-    // 1. Pythonの `request.json` に相当するよう、まずJSONとしてパース
     bodyJson = bodyText ? JSON.parse(bodyText) : {};
   } catch (e) {
     console.warn('Failed to parse JSON body for verification:', (e as Error).message);
     reply.status(400).send('Invalid JSON body');
     return;
   }
-
-  // try {
-  //   const receivedPayload = JSON.stringify(bodyJson);
-
-  //   const expectedSignature = createHmac('sha256', webhookSecret)
-  //       .update(receivedPayload, 'utf-8') // ペイロードをUTF-8文字列として更新
-  //       .digest('hex');                   // 16進数文字列として出力
-
-  //   const expectedBuf = Buffer.from(expectedSignature, 'utf-8');
-  //   const receivedBuf = Buffer.from(receivedSignature.trim(), 'utf-8');
-
-  //   if (receivedBuf.length !== expectedBuf.length || !timingSafeEqual(expectedBuf, receivedBuf)) {
-  //     console.warn('Invalid signature provided');
-  //     reply.status(403).send('Invalid signature');
-  //     return;
-  //   }
-  // } catch (err) {
-  //   console.error('Error verifying signature:', err);
-  //   reply.status(403).send('Invalid signature');
-  //   return;
-  // }
-
 
   const logEntry = `\n-------------------\nTimestamp: ${new Date().toISOString()}\nHeaders: ${JSON.stringify(headersObj, null, 2)}\nBody: ${JSON.stringify(bodyJson, null, 2)}\n-------------------\n`;
   appendLog(logEntry);
@@ -105,16 +83,20 @@ fastify.post('/*', async (request, reply) => {
 
   try {
     const payload = bodyJson as WebhookBody;
-    // (以降のパス解析、switch文、Discordへの転送処理は変更なし)
-    // ...
+
+    // Prefer explicit route param `/webhook/:workspaceSlug` if present
+    const wsFromParams = (request.params as any)?.workspaceSlug as string | undefined;
+
     const baseForUrl = `http://${request.headers.host ?? `localhost:${PORT}`}`;
     const url = new URL((request.raw?.url as string) || (request.url as string) || '/', baseForUrl);
     const parts = url.pathname.split('/').filter(Boolean);
-    let workspaceSlug: string | undefined;
-    if (parts.length >= 2 && parts[0] === 'webhook') {
-      workspaceSlug = parts[1];
-    } else if (parts.length >= 2 && parts[1] === 'webhook') {
-      workspaceSlug = parts[0];
+    let workspaceSlug: string | undefined = wsFromParams;
+    if (!workspaceSlug) {
+      if (parts.length >= 2 && parts[0] === 'webhook') {
+        workspaceSlug = parts[1];
+      } else if (parts.length >= 2 && parts[1] === 'webhook') {
+        workspaceSlug = parts[0];
+      }
     }
 
     const effectivePayload = workspaceSlug ? ({ ...payload, workspace_id: workspaceSlug } as WebhookBody) : payload;
@@ -149,7 +131,10 @@ fastify.post('/*', async (request, reply) => {
     console.error('Error:', error);
     reply.status(500).send('Internal Server Error');
   }
-});
+}
+
+// Register explicit routes that accept workspaceSlug as a route param
+fastify.post('/webhook/:workspaceSlug', handleWebhook);
 
 (async () => {
   try {
