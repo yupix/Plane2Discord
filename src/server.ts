@@ -72,26 +72,26 @@ fastify.post('/*', async (request, reply) => {
     return;
   }
 
-  try {
-    const receivedPayload = JSON.stringify(bodyJson);
+  // try {
+  //   const receivedPayload = JSON.stringify(bodyJson);
 
-    const expectedSignature = createHmac('sha256', webhookSecret)
-        .update(receivedPayload, 'utf-8') // ペイロードをUTF-8文字列として更新
-        .digest('hex');                   // 16進数文字列として出力
+  //   const expectedSignature = createHmac('sha256', webhookSecret)
+  //       .update(receivedPayload, 'utf-8') // ペイロードをUTF-8文字列として更新
+  //       .digest('hex');                   // 16進数文字列として出力
 
-    const expectedBuf = Buffer.from(expectedSignature, 'utf-8');
-    const receivedBuf = Buffer.from(receivedSignature.trim(), 'utf-8');
+  //   const expectedBuf = Buffer.from(expectedSignature, 'utf-8');
+  //   const receivedBuf = Buffer.from(receivedSignature.trim(), 'utf-8');
 
-    if (receivedBuf.length !== expectedBuf.length || !timingSafeEqual(expectedBuf, receivedBuf)) {
-      console.warn('Invalid signature provided');
-      reply.status(403).send('Invalid signature');
-      return;
-    }
-  } catch (err) {
-    console.error('Error verifying signature:', err);
-    reply.status(403).send('Invalid signature');
-    return;
-  }
+  //   if (receivedBuf.length !== expectedBuf.length || !timingSafeEqual(expectedBuf, receivedBuf)) {
+  //     console.warn('Invalid signature provided');
+  //     reply.status(403).send('Invalid signature');
+  //     return;
+  //   }
+  // } catch (err) {
+  //   console.error('Error verifying signature:', err);
+  //   reply.status(403).send('Invalid signature');
+  //   return;
+  // }
 
 
   const logEntry = `\n-------------------\nTimestamp: ${new Date().toISOString()}\nHeaders: ${JSON.stringify(headersObj, null, 2)}\nBody: ${JSON.stringify(bodyJson, null, 2)}\n-------------------\n`;
