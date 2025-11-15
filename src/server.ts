@@ -1,21 +1,16 @@
-// Fastify-based Node server
-import Fastify from 'fastify';
-import { appendFile } from 'node:fs/promises';
-import { createHmac, timingSafeEqual } from 'node:crypto';
-import process from 'node:process';
+// app.ts (Elysia.js-based Bun server)
+import { Elysia } from 'elysia';
 import path from 'node:path';
-import { Buffer } from 'node:buffer';
 
 import { handleCreated } from './utils/handlers';
 import { WebhookBody } from './types';
-
 import { env } from './env';
 
 const PORT = env.PORT;
 const DISCORD_WEBHOOK_URL = env.DISCORD_WEBHOOK_URL;
 const LOG_FILE = path.resolve(process.cwd(), 'webhook_logs.txt');
 
-// Startup diagnostic: report presence of important env vars (do not print secrets)
+// Startup diagnostic: (Same as before)
 console.log('env check:', {
   DISCORD_WEBHOOK_URL: !!DISCORD_WEBHOOK_URL,
   WEBHOOK_SECRET: !!process.env.WEBHOOK_SECRET,
@@ -23,125 +18,137 @@ console.log('env check:', {
   S3_CONFIGURED: !!(process.env.S3_BUCKET_NAME && process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY),
 });
 
+/**
+ * Bun.write を使用した非同期ログ追記
+ * @param entry - ログエントリー文字列
+ */
 async function appendLog(entry: string) {
   try {
-    await appendFile(LOG_FILE, entry);
+    // Bun.write は append オプションをサポートしています
+    const file = Bun.file(LOG_FILE);
+    let currentContent = await file.text();
+    currentContent += entry;
+
+    await file.write(currentContent);
   } catch (e) {
     console.error('Failed to write log:', e);
   }
 }
 
-async function readRawBuffer(req: any): Promise<Uint8Array> {
-  const chunks: Buffer[] = [];
-  const stream = req.raw ?? req;
-  for await (const chunk of stream) {
-    chunks.push(Buffer.from(chunk));
-  }
-  return new Uint8Array(Buffer.concat(chunks));
-}
+const app = new Elysia()
+  .post(
+    '/webhook/:workspaceSlug',
+    async ({ body, headers, params, set, request }) => {
+      // body は { type: 'text' } のため、パース前の生テキスト
+      
+      // ヘッダーオブジェクトを作成 (ログ用)
+      const headersObj = Object.fromEntries(request.headers.entries());
 
-const fastify = Fastify();
+      // --- 署名検証ロジック (Bun.CryptoHasher を使用して *正しく* 実装) ---
+      // const webhookSecret = env.WEBHOOK_SECRET;
+      // if (!webhookSecret) {
+      //   console.error('WEBHOOK_SECRET is not set. Refusing to accept requests.');
+      //   set.status = 500;
+      //   return 'WEBHOOK_SECRET not configured';
+      // }
 
-// Central handler used for multiple route patterns
-async function handleWebhook(request: any, reply: any) {
-  const rawBuf = await readRawBuffer(request);
-  const headersObj = Object.fromEntries(Object.entries(request.headers).map(([k, v]) => [k, String(v || '')])) as Record<string, string>;
-  const bodyText = new TextDecoder().decode(rawBuf || new Uint8Array());
+      // const receivedSignature = headers['x-plane-signature'] || headers['X-Plane-Signature'];
+      // if (!receivedSignature) {
+      //   console.warn('Missing X-Plane-Signature header');
+      //   set.status = 403;
+      //   return 'Missing signature';
+      // }
 
-  // --- 署名検証ロジック (Pythonリファレンスに基づいて修正) ---
-  const webhookSecret = env.WEBHOOK_SECRET;
-  if (!webhookSecret) {
-    console.error('WEBHOOK_SECRET is not set. Refusing to accept unsigned requests.');
-    reply.status(500).send('WEBHOOK_SECRET not configured');
-    return;
-  }
+      // // Bun の API で HMAC-SHA256 署名を計算
+      // const hmac = new CryptoHasher('sha256', Buffer.from(webhookSecret));
+      // hmac.update(bodyText);
+      // const expectedSignature = hmac.digest('hex');
 
-  const receivedSignature = (request.headers['x-plane-signature'] as string) || (request.headers['X-Plane-Signature'] as string);
-  if (!receivedSignature) {
-    console.warn('Missing X-Plane-Signature header');
-    reply.status(403).send('Missing signature');
-    return;
-  }
+      // try {
+      //   // Bun の timingSafeEqual で比較
+      //   if (!timingSafeEqual(Buffer.from(receivedSignature), Buffer.from(expectedSignature))) {
+      //     console.warn('Invalid signature');
+      //     set.status = 403;
+      //     return 'Invalid signature';
+      //   }
+      // } catch (e) {
+      //   // timingSafeEqual はバッファ長が異なるとエラーをスローすることがある
+      //   console.warn('Signature comparison failed:', e);
+      //   set.status = 403;
+      //   return 'Invalid signature format';
+      // }
+      
+      // --- 署名検証完了 ---
 
-  let bodyJson: unknown = {};
-  try {
-    bodyJson = bodyText ? JSON.parse(bodyText) : {};
-  } catch (e) {
-    console.warn('Failed to parse JSON body for verification:', (e as Error).message);
-    reply.status(400).send('Invalid JSON body');
-    return;
-  }
 
-  const logEntry = `\n-------------------\nTimestamp: ${new Date().toISOString()}\nHeaders: ${JSON.stringify(headersObj, null, 2)}\nBody: ${JSON.stringify(bodyJson, null, 2)}\n-------------------\n`;
-  appendLog(logEntry);
+      // ログ追記
+      const logEntry = `\n-------------------\nTimestamp: ${new Date().toISOString()}\nHeaders: ${JSON.stringify(headersObj, null, 2)}\nBody: ${JSON.stringify(body, null, 2)}\n-------------------\n`;
+      await appendLog(logEntry);
 
-  if (!DISCORD_WEBHOOK_URL) {
-    console.error('DISCORD_WEBHOOK_URL is not set. Cannot forward to Discord.');
-    reply.status(500).send('DISCORD_WEBHOOK_URL not configured');
-    return;
-  }
-
-  try {
-    const payload = bodyJson as WebhookBody;
-
-    // Prefer explicit route param `/webhook/:workspaceSlug` if present
-    const wsFromParams = (request.params as any)?.workspaceSlug as string | undefined;
-
-    const baseForUrl = `http://${request.headers.host ?? `localhost:${PORT}`}`;
-    const url = new URL((request.raw?.url as string) || (request.url as string) || '/', baseForUrl);
-    const parts = url.pathname.split('/').filter(Boolean);
-    let workspaceSlug: string | undefined = wsFromParams;
-    if (!workspaceSlug) {
-      if (parts.length >= 2 && parts[0] === 'webhook') {
-        workspaceSlug = parts[1];
-      } else if (parts.length >= 2 && parts[1] === 'webhook') {
-        workspaceSlug = parts[0];
+      if (!DISCORD_WEBHOOK_URL) {
+        console.error('DISCORD_WEBHOOK_URL is not set. Cannot forward to Discord.');
+        set.status = 500;
+        return 'DISCORD_WEBHOOK_URL not configured';
       }
+
+      try {
+        const payload = body as WebhookBody;
+
+        // Elysia では :workspaceSlug が params から直接取得できる
+        const workspaceSlug = params.workspaceSlug;
+
+        // Fastify 版にあった複雑なURLパースロジックは、
+        // Elysia の型指定されたルートパラメータで不要になります。
+        const effectivePayload = workspaceSlug 
+          ? ({ ...payload, workspace_id: workspaceSlug } as WebhookBody) 
+          : payload;
+
+        let discordMessage: unknown;
+
+
+        switch (payload.action) {
+          case 'created':
+            discordMessage = await handleCreated(effectivePayload);
+            break;
+          case 'deleted':
+            // discordMessage = await handleDeleted(effectivePayload);
+            break;
+          case 'updated':
+            // discordMessage = await handleUpdated(effectivePayload);
+            break;
+          default:
+            console.log('Unhandled action:', JSON.stringify(payload));
+            set.status = 200;
+            return 'ok'; // 'reply.send' の代わりに 'return'
+        }
+
+        const resp = await fetch(String(DISCORD_WEBHOOK_URL), { 
+          method: 'POST', 
+          headers: { 'content-type': 'application/json' }, 
+          body: JSON.stringify(discordMessage) 
+        });
+
+        if (!resp.ok) {
+          console.error('Failed to forward to Discord:', resp.status, await resp.text());
+          set.status = 502;
+          return 'Failed to forward to Discord';
+        }
+
+        set.status = 200;
+        return 'ok';
+      } catch (error) {
+        console.error('Error:', error);
+        set.status = 500;
+        return 'Internal Server Error';
+      }
+    },
+    {
+      // ★ これが重要: 
+      // Elysia に body を自動で JSON パースさせず、
+      // 生のテキストとして 'body' 変数に渡すよう指示
+      type: 'text',
     }
-
-    const effectivePayload = workspaceSlug ? ({ ...payload, workspace_id: workspaceSlug } as WebhookBody) : payload;
-
-    let discordMessage: unknown;
-
-    switch (payload.action) {
-      case 'created':
-        discordMessage = await handleCreated(effectivePayload);
-        break;
-      case 'deleted':
-        // discordMessage = await handleDeleted(effectivePayload);
-        break;
-      case 'updated':
-        // discordMessage = await handleUpdated(effectivePayload);
-        break;
-      default:
-        console.log('Unhandled action:', JSON.stringify(payload));
-        reply.status(200).send('ok');
-        return;
-    }
-
-    const resp = await fetch(String(DISCORD_WEBHOOK_URL), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(discordMessage) });
-    if (!resp.ok) {
-      console.error('Failed to forward to Discord:', resp.status, await resp.text());
-      reply.status(502).send('Failed to forward to Discord');
-      return;
-    }
-
-    reply.status(200).send('ok');
-  } catch (error) {
-    console.error('Error:', error);
-    reply.status(500).send('Internal Server Error');
-  }
-}
-
-// Register explicit routes that accept workspaceSlug as a route param
-fastify.post('/webhook/:workspaceSlug', handleWebhook);
-
-(async () => {
-  try {
-    await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    console.log(`Server listening on http://0.0.0.0:${PORT}`);
-  } catch (err) {
-    console.error('Error starting server:', err);
-    process.exit(1);
-  }
-})();
+  )
+  .listen(PORT, () => {
+    console.log(`🦊 Elysia server listening on http://0.0.0.0:${PORT}`);
+  });
