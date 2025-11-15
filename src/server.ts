@@ -5,6 +5,8 @@ import path from 'node:path';
 import { handleCreated } from './utils/handlers';
 import { WebhookBody } from './types';
 import { env } from './env';
+import { write } from 'bun';
+import { appendFile } from 'node:fs';
 
 const PORT = env.PORT;
 const DISCORD_WEBHOOK_URL = env.DISCORD_WEBHOOK_URL;
@@ -25,11 +27,12 @@ console.log('env check:', {
 async function appendLog(entry: string) {
   try {
     // Bun.write は append オプションをサポートしています
-    const file = Bun.file(LOG_FILE);
-    let currentContent = await file.text();
-    currentContent += entry;
-
-    await file.write(currentContent);
+    // ファイルがあるか確認
+    const fileExists = await Bun.file(LOG_FILE).exists();
+    if (!fileExists) {
+      await write(LOG_FILE, '', { mode: 0o644 });
+    }
+    appendFile(LOG_FILE, entry, () => {});
   } catch (e) {
     console.error('Failed to write log:', e);
   }
