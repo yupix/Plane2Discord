@@ -30,102 +30,97 @@ Body: ${JSON.stringify(req.body, null, 2)}
     }
   });
 
+  // Make sure webhook URL is set
+  if (!DISCORD_WEBHOOK_URL) {
+    console.error('DISCORD_WEBHOOK_URL is not set. Cannot forward to Discord.');
+    return res.status(500).send('DISCORD_WEBHOOK_URL not configured');
+  }
+
   try {
     const { action, data, activity } = req.body;
 
-    // Handle different actions
+    // Helpers to build a clear, safe Discord payload
+    const safe = (v) => (v === undefined || v === null || v === '') ? 'N/A' : v;
+    const safeAvatar = (url) => (typeof url === 'string' && /^https?:\/\//.test(url) ? url : 'https://i.imgur.com/AfFp7pu.png');
+    const buildPayload = ({ title, description, fields = [], color = 0x2f3136, timestamp, actorAvatar, footerText }) => {
+      return {
+        username: 'Monotone Development',
+        avatar_url: safeAvatar(actorAvatar),
+        content: `${title} — ${description ? description.replace(/\*\*/g, '') : ''}`.trim(),
+        embeds: [{
+          title: title,
+          description: description || undefined,
+          color: color,
+          fields: fields,
+          timestamp: timestamp || new Date().toISOString(),
+          thumbnail: { url: safeAvatar(actorAvatar) },
+          footer: { text: footerText || 'Plane2Discord' }
+        }]
+      };
+    };
+
+    // Handle different actions with clearer embeds
     let discordMessage;
-    
     switch (action) {
-      case 'created':
-        discordMessage = {
-          username: 'Monotone Development',
-          embeds: [{
-            title: 'New Card Created',
-            description: `**${data.name}** added to project`,
-            color: convertColor(data.state?.color),
-            fields: [
-              {
-                name: 'Project',
-                value: `ID: \`${data.project}\``,
-                inline: true
-              },
-              {
-                name: 'State',
-                value: data.state?.name || 'N/A',
-                inline: true
-              },
-              {
-                name: 'Created By',
-                value: `[${activity.actor.display_name}](${activity.actor.avatar_url})`,
-                inline: true
-              }
-            ],
-            timestamp: new Date(data.created_at).toISOString(),
-            thumbnail: { url: activity?.actor?.avatar_url },
-            footer: {
-              text: 'Card created'
-            }
-          }]
-        };
+      case 'created': {
+        const fields = [
+          { name: 'Card', value: safe(data.name), inline: true },
+          { name: 'Project', value: `ID: \`${safe(data.project)}\``, inline: true },
+          { name: 'State', value: safe(data.state?.name), inline: true },
+          { name: 'Created At', value: new Date(data.created_at || Date.now()).toLocaleString(), inline: true },
+          { name: 'Created By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
+        ];
+
+        discordMessage = buildPayload({
+          title: 'New Card Created',
+          description: `**${safe(data.name)}** added to project`,
+          fields,
+          color: convertColor(data.state?.color),
+          timestamp: new Date(data.created_at).toISOString(),
+          actorAvatar: activity?.actor?.avatar_url,
+          footerText: 'Card created'
+        });
+      }
         break;
 
-      case 'deleted':
-        discordMessage = {
-          username: 'Monotone Development',
-          embeds: [{
-            title: 'Card Deleted',
-            description: `Card **${data.id}** has been deleted`,
-            color: 0xff4444, // Red color for deletions
-            fields: [
-              {
-                name: 'Deleted By',
-                value: `[${activity.actor.display_name}](${activity.actor.avatar_url})`,
-                inline: true
-              }
-            ],
-            timestamp: new Date().toISOString(),
-            thumbnail: { url: activity?.actor?.avatar_url },
-            footer: {
-              text: 'Card removed',
-            }
-          }]
-        };
+      case 'deleted': {
+        const fields = [
+          { name: 'Card ID', value: safe(data.id), inline: true },
+          { name: 'Deleted By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
+        ];
+
+        discordMessage = buildPayload({
+          title: 'Card Deleted',
+          description: `Card **${safe(data.id)}** has been deleted`,
+          fields,
+          color: 0xff4444,
+          timestamp: new Date().toISOString(),
+          actorAvatar: activity?.actor?.avatar_url,
+          footerText: 'Card removed'
+        });
+      }
         break;
 
-      case 'updated':
-        if (activity?.field === 'state') {
-          discordMessage = {
-            username: 'Monotone Development',
-            embeds: [{
-              title: `Card Updated`,
-              description: `**${data.name}** moved`,
-              color: convertColor(data.state?.color),
-              fields: [
-                {
-                  name: 'State Change',
-                  value: `From **${activity.old_value}** to **${activity.new_value}**`,
-                  inline: true
-                },
-                {
-                  name: 'Project',
-                  value: `ID: \`${data.project}\``,
-                  inline: true
-                },
-                {
-                  name: 'Updated By',
-                  value: `[${activity.actor.display_name}](${activity.actor.avatar_url})`,
-                  inline: true
-                }
-              ],
-              timestamp: new Date(data.updated_at).toISOString(),
-              thumbnail: { url: activity?.actor?.avatar_url },
-              footer: {
-                text: 'Card moved',
-              }
-            }]
-          };
-        }
+      case 'updated': {
+        // Provide a helpful summary when state changed or other known fields
+        const actionDesc = getActionDescription(activity);
+        const fields = [
+          { name: 'Card', value: safe(data.name), inline: true },
+          { name: 'Change', value: actionDesc, inline: true },
+          { name: 'Project', value: `ID: \`${safe(data.project)}\``, inline: true },
+          { name: 'Updated By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
+        ];
+
+        discordMessage = buildPayload({
+          title: 'Card Updated',
+          description: `**${safe(data.name)}** updated`,
+          fields,
+          color: convertColor(data.state?.color),
+          timestamp: new Date(data.updated_at || Date.now()).toISOString(),
+          actorAvatar: activity?.actor?.avatar_url,
+          footerText: 'Card updated'
+        });
+      }
         break;
 
       default:
@@ -134,7 +129,10 @@ Body: ${JSON.stringify(req.body, null, 2)}
     }
 
     // Send to Discord
-    await axios.post(DISCORD_WEBHOOK_URL, discordMessage);
+    await axios.post(DISCORD_WEBHOOK_URL, discordMessage).catch(err => {
+      console.error('Failed to forward to Discord:', err.message || err);
+      throw err;
+    });
     res.sendStatus(200);
   } catch (error) {
     console.error("Error:", error.message);
@@ -159,7 +157,13 @@ function getActionDescription(activity) {
 
 function convertColor(hex) {
   if (!hex) return 0x2f3136; // Default Discord dark gray
-  return parseInt(hex.replace("#", ""), 16);
+  try {
+    const cleaned = String(hex).replace('#', '');
+    const parsed = parseInt(cleaned, 16);
+    return Number.isNaN(parsed) ? 0x2f3136 : parsed;
+  } catch (e) {
+    return 0x2f3136;
+  }
 }
 
 app.listen(PORT, () => {
