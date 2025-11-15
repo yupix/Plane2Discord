@@ -1,42 +1,81 @@
-// Deno-based server implementation using std/http
-import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
-import "https://deno.land/std@0.201.0/dotenv/load.ts";
-import { handleCreated, handleDeleted, handleUpdated } from './utils/handlers.ts';
-import { WebhookBody } from "./types.ts";
+// Fastify-based Node server
+import Fastify from 'fastify';
+import { appendFile } from 'node:fs/promises';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import process from 'node:process';
+import path from 'node:path';
+import { Buffer } from 'node:buffer';
 
-const PORT = Number(Deno.env.get('PORT') || '3000');
-const DISCORD_WEBHOOK_URL = Deno.env.get('DISCORD_WEBHOOK_URL');
-const LOG_FILE = new URL('../webhook_logs.txt', import.meta.url).pathname;
+import { handleCreated } from './utils/handlers';
+import { WebhookBody } from './types';
 
-function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let result = 0;
-  for (let i = 0; i < a.length; i++) result |= a[i] ^ b[i];
-  return result === 0;
-}
+import { env } from './env';
 
-async function computeHmac(secret: string, data: Uint8Array): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  // Ensure we pass a plain ArrayBuffer for the slice of the Uint8Array
-  const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-  const sig = await crypto.subtle.sign('HMAC', key, ab);
-  return new Uint8Array(sig as ArrayBuffer);
-}
+const PORT = env.PORT;
+const DISCORD_WEBHOOK_URL = env.DISCORD_WEBHOOK_URL;
+const LOG_FILE = path.resolve(process.cwd(), 'webhook_logs.txt');
+
+// Startup diagnostic: report presence of important env vars (do not print secrets)
+console.log('env check:', {
+  DISCORD_WEBHOOK_URL: !!DISCORD_WEBHOOK_URL,
+  WEBHOOK_SECRET: !!process.env.WEBHOOK_SECRET,
+  PLANE_API_KEY: !!process.env.PLANE_API_KEY,
+  S3_CONFIGURED: !!(process.env.S3_BUCKET_NAME && process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY),
+});
 
 async function appendLog(entry: string) {
   try {
-    const file = await Deno.open(LOG_FILE, { create: true, append: true });
-    await file.write(new TextEncoder().encode(entry));
-    file.close();
+    await appendFile(LOG_FILE, entry);
   } catch (e) {
     console.error('Failed to write log:', e);
   }
 }
 
-serve(async (req: Request) => {
-  const rawBuf = new Uint8Array(await req.arrayBuffer());
-  const headersObj = Object.fromEntries([...req.headers]) as Record<string, string>;
+async function readRawBuffer(req: any): Promise<Uint8Array> {
+  const chunks: Buffer[] = [];
+  const stream = req.raw ?? req;
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return new Uint8Array(Buffer.concat(chunks));
+}
+
+const fastify = Fastify();
+
+fastify.post('/*', async (request, reply) => {
+  const rawBuf = await readRawBuffer(request);
+  const headersObj = Object.fromEntries(Object.entries(request.headers).map(([k, v]) => [k, String(v || '')])) as Record<string, string>;
   const bodyText = new TextDecoder().decode(rawBuf || new Uint8Array());
+
+  // webhook signature verification
+  const webhookSecret = process.env.WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    console.error('WEBHOOK_SECRET is not set. Refusing to accept unsigned requests.');
+    reply.status(500).send('WEBHOOK_SECRET not configured');
+    return;
+  }
+
+  const receivedSignature = (request.headers['x-plane-signature'] as string) || (request.headers['X-Plane-Signature'] as string);
+  if (!receivedSignature) {
+    console.warn('Missing X-Plane-Signature header');
+    reply.status(403).send('Missing signature');
+    return;
+  }
+
+  try {
+    const expected = createHmac('sha256', webhookSecret).update(Buffer.from(rawBuf)).digest();
+    const receivedBuf = Buffer.from(receivedSignature.trim(), 'hex');
+    if (receivedBuf.length !== expected.length || !timingSafeEqual(expected, receivedBuf)) {
+      console.warn('Invalid signature provided');
+      reply.status(403).send('Invalid signature');
+      return;
+    }
+  } catch (err) {
+    console.error('Error verifying signature:', err);
+    reply.status(403).send('Invalid signature');
+    return;
+  }
+
   let bodyJson: unknown = {};
   try { bodyJson = bodyText ? JSON.parse(bodyText) : {}; } catch (_) { bodyJson = {}; }
 
@@ -45,38 +84,15 @@ serve(async (req: Request) => {
 
   if (!DISCORD_WEBHOOK_URL) {
     console.error('DISCORD_WEBHOOK_URL is not set. Cannot forward to Discord.');
-    return new Response('DISCORD_WEBHOOK_URL not configured', { status: 500 });
-  }
-
-  // const webhookSecret = Deno.env.get('WEBHOOK_SECRET');
-  // if (!webhookSecret) {
-  //   console.error('WEBHOOK_SECRET is not set. Refusing to accept unsigned requests.');
-  //   return new Response('WEBHOOK_SECRET not configured', { status: 500 });
-  // }
-
-  // const receivedSignature = req.headers.get('x-plane-signature') || req.headers.get('X-Plane-Signature');
-  // if (!receivedSignature) {
-  //   console.warn('Missing X-Plane-Signature header');
-  //   return new Response('Missing signature', { status: 403 });
-  // }
-
-  try {
-    // const expected = await computeHmac(webhookSecret, rawBuf);
-    // receivedSignature is hex
-    // const receivedBuf = new Uint8Array(receivedSignature.trim().match(/.{1,2}/g)!.map((b: string) => parseInt(b, 16)));
-    // if (receivedBuf.length !== expected.length || !timingSafeEqual(expected, receivedBuf)) {
-    //   console.warn('Invalid signature provided');
-    //   return new Response('Invalid signature', { status: 403 });
-    // }
-  } catch (err) {
-    console.error('Error verifying signature:', err);
-    return new Response('Invalid signature', { status: 403 });
+    reply.status(500).send('DISCORD_WEBHOOK_URL not configured');
+    return;
   }
 
   try {
     const payload = bodyJson as WebhookBody;
     // parse path for workspace slug: support /webhook/:slug and /:slug/webhook
-    const url = new URL(req.url);
+    const baseForUrl = `http://${request.headers.host ?? `localhost:${PORT}`}`;
+    const url = new URL((request.raw?.url as string) || (request.url as string) || '/', baseForUrl);
     const parts = url.pathname.split('/').filter(Boolean);
     let workspaceSlug: string | undefined;
     if (parts.length >= 2 && parts[0] === 'webhook') {
@@ -87,8 +103,6 @@ serve(async (req: Request) => {
       workspaceSlug = parts[0];
     }
 
-    // ヘッダー
-    // if we have a slug, prefer it as the workspace identifier
     const effectivePayload = workspaceSlug ? ({ ...payload, workspace_id: workspaceSlug } as WebhookBody) : payload;
 
     let discordMessage: unknown;
@@ -98,25 +112,37 @@ serve(async (req: Request) => {
         discordMessage = await handleCreated(effectivePayload);
         break;
       case 'deleted':
-        discordMessage = await handleDeleted(effectivePayload);
+        // discordMessage = await handleDeleted(effectivePayload);
         break;
       case 'updated':
-        discordMessage = await handleUpdated(effectivePayload);
+        // discordMessage = await handleUpdated(effectivePayload);
         break;
       default:
         console.log('Unhandled action:', JSON.stringify(payload));
-        return new Response('ok', { status: 200 });
+        reply.status(200).send('ok');
+        return;
     }
 
-    const resp = await fetch(DISCORD_WEBHOOK_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(discordMessage) });
+    const resp = await fetch(String(DISCORD_WEBHOOK_URL), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(discordMessage) });
     if (!resp.ok) {
       console.error('Failed to forward to Discord:', resp.status, await resp.text());
-      return new Response('Failed to forward to Discord', { status: 502 });
+      reply.status(502).send('Failed to forward to Discord');
+      return;
     }
 
-    return new Response('ok', { status: 200 });
+    reply.status(200).send('ok');
   } catch (error) {
     console.error('Error:', error);
-    return new Response('Internal Server Error', { status: 500 });
+    reply.status(500).send('Internal Server Error');
   }
-}, { port: PORT });
+});
+
+(async () => {
+  try {
+    await fastify.listen({ port: PORT, host: '0.0.0.0' });
+    console.log(`Server listening on http://0.0.0.0:${PORT}`);
+  } catch (err) {
+    console.error('Error starting server:', err);
+    process.exit(1);
+  }
+})();

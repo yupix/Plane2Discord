@@ -1,14 +1,11 @@
-import { uploadImageToS3 } from "../s3.ts";
-import { WebhookBody, User } from "../types.ts";
-import { buildPayload, convertColor, safe } from "./helpers.ts";
+import { WebhookBody, User, Activity } from "../types";
 
-import { planeClient } from "./plane.ts";
-import { APIEmbed } from "npm:discord-api-types/v10";
+import { planeClient } from "./plane";
+import { env } from '../env';
 
 function getActorAvatar(user: User) {
-    return Deno.env.get("PLANE_HOSTNAME")
-        ? `https://${Deno.env.get("PLANE_HOSTNAME")}${user.avatar_url}`
-        : undefined;
+  const host = env.PLANE_HOSTNAME;
+  return host ? `https://${host}${user.avatar_url}` : undefined;
 }
 
 export function getActionDescription(activity: Activity | undefined): string {
@@ -58,10 +55,10 @@ export async function handleCreated(
         payload.data.id,
       );
       console.log(workItem)
-      const file_url = await uploadImageToS3(getActorAvatar(payload.activity?.actor)!);
+      const file_url = getActorAvatar(payload.activity?.actor)!;
       console.log(file_url);
 
-      const embed: APIEmbed = {
+    const embed: Record<string, unknown> = {
         title: payload.data.name,
         // url:
         description: payload.data.description_stripped,
@@ -86,111 +83,86 @@ export async function handleCreated(
       break;
   }
 
-  const fields = [
-    { name: "Card", value: safe(data.name), inline: true },
-    { name: "Project", value: `ID: \`${safe(data.project)}\``, inline: true },
-    { name: "State", value: safe(data.state?.name), inline: true },
-    {
-      name: "Created At",
-      value: new Date(data.created_at || Date.now()).toLocaleString(),
-      inline: true,
-    },
-    {
-      name: "Created By",
-      value: `${safe(activity?.actor?.display_name)}`,
-      inline: true,
-    },
-  ];
 
-  return buildPayload({
-    title: "New Card Created",
-    description: `**${safe(data.name)}** added to project`,
-    fields,
-    color: convertColor(data.state?.color),
-    timestamp: new Date(data.created_at || Date.now()).toISOString(),
-    actorAvatar: getActorAvatar(activity?.actor) || getActorAvatar(data?.actor),
-    headers,
-    footerText: "Card created",
-  });
 }
 
-export function handleDeleted(
-  data: DeletedData = {},
-  activity: Activity = {},
-  headers: Record<string, string> = {},
-  _eventName: EventType | undefined = undefined,
-) {
-  const fields = [
-    { name: "Card ID", value: safe(data.id), inline: true },
-    {
-      name: "Deleted By",
-      value: `${safe(activity?.actor?.display_name)}`,
-      inline: true,
-    },
-  ];
+// export function handleDeleted(
+//   data: DeletedData = {},
+//   activity: Activity = {},
+//   headers: Record<string, string> = {},
+//   _eventName: EventType | undefined = undefined,
+// ) {
+//   const fields = [
+//     { name: "Card ID", value: safe(data.id), inline: true },
+//     {
+//       name: "Deleted By",
+//       value: `${safe(activity?.actor?.display_name)}`,
+//       inline: true,
+//     },
+//   ];
 
-  return buildPayload({
-    title: "Card Deleted",
-    description: `Card **${safe(data.id)}** has been deleted`,
-    fields,
-    color: 0xff4444,
-    timestamp: new Date().toISOString(),
-    actorAvatar: getActorAvatar(activity?.actor) || getActorAvatar(data?.actor),
-    headers,
-    footerText: "Card removed",
-  });
-}
+//   return buildPayload({
+//     title: "Card Deleted",
+//     description: `Card **${safe(data.id)}** has been deleted`,
+//     fields,
+//     color: 0xff4444,
+//     timestamp: new Date().toISOString(),
+//     actorAvatar: getActorAvatar(activity?.actor) || getActorAvatar(data?.actor),
+//     headers,
+//     footerText: "Card removed",
+//   });
+// }
 
-export function handleUpdated(
-  data: UpdatedData = {},
-  activity: Activity = {},
-  headers: Record<string, string> = {},
-  _eventName: EventType | undefined = undefined,
-) {
-  const actionDesc = getActionDescription(activity);
-  const fields: { name: string; value: string; inline?: boolean }[] = [
-    { name: "Card", value: safe(data.name), inline: true },
-    { name: "Change", value: actionDesc, inline: true },
-    { name: "Project", value: `ID: \`${safe(data.project)}\``, inline: true },
-    {
-      name: "Updated By",
-      value: `${safe(activity?.actor?.display_name)}`,
-      inline: true,
-    },
-  ];
+// export function handleUpdated(
+//   data: UpdatedData = {},
+//   activity: Activity = {},
+//   headers: Record<string, string> = {},
+//   _eventName: EventType | undefined = undefined,
+// ) {
+//   const actionDesc = getActionDescription(activity);
+//   const fields: { name: string; value: string; inline?: boolean }[] = [
+//     { name: "Card", value: safe(data.name), inline: true },
+//     { name: "Change", value: actionDesc, inline: true },
+//     { name: "Project", value: `ID: \`${safe(data.project)}\``, inline: true },
+//     {
+//       name: "Updated By",
+//       value: `${safe(activity?.actor?.display_name)}`,
+//       inline: true,
+//     },
+//   ];
 
-  let description = `**${safe(data.name)}** updated`;
-  if (_eventName === "issue_comment") {
-    const commentText = data?.comment_stripped || activity?.new_value ||
-      data?.comment_html || activity?.new_value;
-    if (commentText) {
-      description = `Comment: ${String(commentText).replace(/<[^>]*>/g, "")}`;
-      fields.unshift({
-        name: "Comment",
-        value: (data?.comment_stripped || String(commentText).slice(0, 200)),
-        inline: false,
-      });
-    }
-  } else if (activity?.field === "description") {
-    const newDesc = activity?.new_value || data?.description ||
-      data?.comment_stripped;
-    if (newDesc) {
-      fields.unshift({
-        name: "Description",
-        value: String(newDesc).replace(/<[^>]*>/g, ""),
-        inline: false,
-      });
-    }
-  }
+//   let description = `**${safe(data.name)}** updated`;
+//   if (_eventName === "issue_comment") {
+//     const commentText = data?.comment_stripped || activity?.new_value ||
+//       data?.comment_html || activity?.new_value;
+//     if (commentText) {
+//       description = `Comment: ${String(commentText).replace(/<[^>]*>/g, "")}`;
+//       fields.unshift({
+//         name: "Comment",
+//         value: (data?.comment_stripped || String(commentText).slice(0, 200)),
+//         inline: false,
+//       });
+//     }
+//   } else if (activity?.field === "description") {
+//     const newDesc = activity?.new_value || data?.description ||
+//       data?.comment_stripped;
+//     if (newDesc) {
+//       fields.unshift({
+//         name: "Description",
+//         value: String(newDesc).replace(/<[^>]*>/g, ""),
+//         inline: false,
+//       });
+//     }
+//   }
 
-  return buildPayload({
-    title: "Card Updated",
-    description,
-    fields,
-    color: convertColor(data.state?.color),
-    timestamp: new Date(data.updated_at || Date.now()).toISOString(),
-    actorAvatar: getActorAvatar(activity?.actor) || getActorAvatar(data?.actor),
-    footerText: "Card updated",
-    headers,
-  });
-}
+//   return buildPayload({
+//     title: "Card Updated",
+//     description,
+//     fields,
+//     color: convertColor(data.state?.color),
+//     timestamp: new Date(data.updated_at || Date.now()).toISOString(),
+//     actorAvatar: getActorAvatar(activity?.actor) || getActorAvatar(data?.actor),
+//     footerText: "Card updated",
+//     headers,
+//   });
+// }

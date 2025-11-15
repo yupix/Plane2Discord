@@ -1,10 +1,9 @@
 import {
   S3Client,
   PutObjectCommand,
-  S3ClientConfig,
-} from "npm:@aws-sdk/client-s3@^3.592.0";
-import { crypto } from "https://deno.land/std@0.224.0/crypto/mod.ts";
+} from "@aws-sdk/client-s3";
 import { DatabaseSync } from "node:sqlite";
+import { env } from './env';
 
 /**
  * S3設定用のインターフェース (変更なし)
@@ -18,11 +17,11 @@ export interface S3UploadConfig {
 }
 
 const config: S3UploadConfig = {
-    region: Deno.env.get("S3_REGION")!,
-    accessKeyId: Deno.env.get("S3_ACCESS_KEY_ID")!,
-    secretAccessKey: Deno.env.get("S3_SECRET_ACCESS_KEY")!,
-    bucketName: Deno.env.get("S3_BUCKET_NAME")!,
-    endpoint: Deno.env.get("S3_ENDPOINT")!,
+  region: env.S3_REGION!,
+  accessKeyId: env.S3_ACCESS_KEY_ID!,
+  secretAccessKey: env.S3_SECRET_ACCESS_KEY!,
+  bucketName: env.S3_BUCKET_NAME!,
+  endpoint: env.S3_ENDPOINT!,
 }
 
 /**
@@ -80,7 +79,8 @@ class PersistentImageCache {
         "INSERT OR REPLACE INTO image_cache (image_hash, s3_url) VALUES (?, ?)"
       ).run(hashKey, value);
     } catch (e) {
-      console.error("Failed to write to cache DB:", e.message);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("Failed to write to cache DB:", msg);
     }
   }
 }
@@ -129,8 +129,9 @@ export async function uploadImageToS3(
     filename = `${crypto.randomUUID()}${extension}`;
 
   } catch (err) {
-    console.error("Download Error:", err.message);
-    throw new Error(`Failed to download image: ${err.message}`);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("Download Error:", msg);
+    throw new Error(`Failed to download image: ${msg}`);
   }
 
   const s3Client = new S3Client({
@@ -171,8 +172,9 @@ export async function uploadImageToS3(
 
     return newS3Url;
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.error("Error: S3へのアップロードに失敗しました。");
-    console.error(err);
-    throw new Error(`Failed to upload to S3: ${err.message}`);
+    console.error(msg);
+    throw new Error(`Failed to upload to S3: ${msg}`);
   }
 }

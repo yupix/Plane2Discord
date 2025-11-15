@@ -1,31 +1,39 @@
-# Use the latest Deno Alpine image to ensure lockfile compatibility
-FROM denoland/deno:alpine
+## Multi-stage Node + pnpm Dockerfile
+## Builder: install dependencies and compile TypeScript
+FROM node:24-alpine AS builder
 
-# Use /app as working directory
+# Enable corepack and pnpm
+RUN corepack enable && corepack prepare pnpm@8.7.0 --activate
+
 WORKDIR /app
 
-# Copy only manifest and lock files first (if present) to leverage Docker layer cache for deps
-COPY deno.json deno.lock* ./  
-COPY src ./src
+# Copy package manifests first for better caching
+COPY package.json pnpm-lock.yaml tsconfig.json ./
 
-# Set a writable DENO_DIR inside the image so caching doesn't hit root-owned dirs
-ENV DENO_DIR=/app/.deno
-RUN mkdir -p /app/.deno && chown -R deno:deno /app/.deno
+# Install dependencies (including dev deps for build)
+RUN pnpm install --frozen-lockfile
 
-# Pre-cache dependencies to speed up container start and take advantage of layer caching
-RUN deno cache src/server.ts
-
-# Copy remaining files (if any)
-
+# Copy full source and build
 COPY . .
+RUN pnpm run build
 
-# Set non-root user (the official image includes 'deno' user)
-USER deno
+## Runner: smaller runtime image
+FROM node:24-alpine AS runner
 
-# Default port
+# Activate corepack/pnpm in the runtime image (optional, but keeps behavior consistent)
+RUN corepack enable && corepack prepare pnpm@8.7.0 --activate
+
+WORKDIR /app
+
+# Copy runtime artifacts from builder
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+
+ENV NODE_ENV=production
 ENV PORT=3000
 
 EXPOSE 3000
 
-# Run the Deno server with necessary permissions
-CMD ["run", "--allow-net", "--allow-read", "--allow-env", "--allow-write", "src/server.ts"]
+# Run the compiled server
+CMD ["node", "dist/server.js"]

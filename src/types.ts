@@ -91,7 +91,7 @@ export interface DeletedObject {
 // ----------------------------------------------------------------
 
 /** 更新アクティビティ (変更履歴) */
-interface Activity {
+export interface Activity {
   /**
    * 変更されたフィールド名。 (例: "assignees", "priority", "labels")
    * created や deleted の場合は null や "issue", "description" などが入る。

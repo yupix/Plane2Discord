@@ -1,6 +1,7 @@
-import plane from "npm:@makeplane/plane-node-sdk";
+import { PlaneClient } from "@makeplane/plane-node-sdk";
+import { env } from '../env';
 
-export const planeClient = new plane.PlaneClient({
-    baseUrl: Deno.env.get("PLANE_API_BASE_URL"),
-    apiKey: Deno.env.get("PLANE_API_KEY")!,
+export const planeClient = new PlaneClient({
+    baseUrl: env.PLANE_API_BASE_URL,
+    accessToken: env.PLANE_API_KEY,
 });
