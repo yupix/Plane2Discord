@@ -47,7 +47,7 @@ fastify.post('/*', async (request, reply) => {
   const headersObj = Object.fromEntries(Object.entries(request.headers).map(([k, v]) => [k, String(v || '')])) as Record<string, string>;
   const bodyText = new TextDecoder().decode(rawBuf || new Uint8Array());
 
-  // webhook signature verification
+  // --- 署名検証ロジック (Pythonリファレンスに基づいて修正) ---
   const webhookSecret = env.WEBHOOK_SECRET;
   if (!webhookSecret) {
     console.error('WEBHOOK_SECRET is not set. Refusing to accept unsigned requests.');
@@ -62,10 +62,27 @@ fastify.post('/*', async (request, reply) => {
     return;
   }
 
+  let bodyJson: unknown = {};
   try {
-    const expected = createHmac('sha256', webhookSecret).update(Buffer.from(rawBuf)).digest();
-    const receivedBuf = Buffer.from(receivedSignature.trim(), 'hex');
-    if (receivedBuf.length !== expected.length || !timingSafeEqual(expected, receivedBuf)) {
+    // 1. Pythonの `request.json` に相当するよう、まずJSONとしてパース
+    bodyJson = bodyText ? JSON.parse(bodyText) : {};
+  } catch (e) {
+    console.warn('Failed to parse JSON body for verification:', e.message);
+    reply.status(400).send('Invalid JSON body');
+    return;
+  }
+
+  try {
+    const receivedPayload = JSON.stringify(bodyJson);
+
+    const expectedSignature = createHmac('sha256', webhookSecret)
+        .update(receivedPayload, 'utf-8') // ペイロードをUTF-8文字列として更新
+        .digest('hex');                   // 16進数文字列として出力
+
+    const expectedBuf = Buffer.from(expectedSignature, 'utf-8');
+    const receivedBuf = Buffer.from(receivedSignature.trim(), 'utf-8');
+
+    if (receivedBuf.length !== expectedBuf.length || !timingSafeEqual(expectedBuf, receivedBuf)) {
       console.warn('Invalid signature provided');
       reply.status(403).send('Invalid signature');
       return;
@@ -76,8 +93,6 @@ fastify.post('/*', async (request, reply) => {
     return;
   }
 
-  let bodyJson: unknown = {};
-  try { bodyJson = bodyText ? JSON.parse(bodyText) : {}; } catch (_) { bodyJson = {}; }
 
   const logEntry = `\n-------------------\nTimestamp: ${new Date().toISOString()}\nHeaders: ${JSON.stringify(headersObj, null, 2)}\nBody: ${JSON.stringify(bodyJson, null, 2)}\n-------------------\n`;
   appendLog(logEntry);
@@ -90,16 +105,15 @@ fastify.post('/*', async (request, reply) => {
 
   try {
     const payload = bodyJson as WebhookBody;
-    // parse path for workspace slug: support /webhook/:slug and /:slug/webhook
+    // (以降のパス解析、switch文、Discordへの転送処理は変更なし)
+    // ...
     const baseForUrl = `http://${request.headers.host ?? `localhost:${PORT}`}`;
     const url = new URL((request.raw?.url as string) || (request.url as string) || '/', baseForUrl);
     const parts = url.pathname.split('/').filter(Boolean);
     let workspaceSlug: string | undefined;
     if (parts.length >= 2 && parts[0] === 'webhook') {
-      // /webhook/:slug
       workspaceSlug = parts[1];
     } else if (parts.length >= 2 && parts[1] === 'webhook') {
-      // /:slug/webhook
       workspaceSlug = parts[0];
     }
 
