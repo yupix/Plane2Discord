@@ -15,11 +15,27 @@ const LOG_FILE = path.join(__dirname, "webhook_logs.txt");
 
 // --- Helpers available to handlers ---
 const safe = (v) => (v === undefined || v === null || v === '') ? 'N/A' : v;
-const safeAvatar = (url) => (typeof url === 'string' && /^https?:\/\//.test(url) ? url : 'https://i.imgur.com/AfFp7pu.png');
-const buildPayload = ({ title, description, fields = [], color = 0x2f3136, timestamp, actorAvatar, footerText }) => {
+// Resolve avatar URL; if it's a relative path (starts with '/'), build absolute using headers
+const safeAvatar = (url, headers = {}) => {
+  try {
+    if (typeof url === 'string' && /^https?:\/\//.test(url)) return url;
+    if (typeof url === 'string' && url.startsWith('/')) {
+      const proto = headers['x-forwarded-proto'] || headers['cf-visitor'] && (() => {
+        try { return JSON.parse(headers['cf-visitor']).scheme; } catch(e) { return null; }
+      })() || 'https';
+      const host = headers['x-forwarded-host'] || headers['host'] || '';
+      if (host) return `${proto}://${host}${url}`;
+    }
+  } catch (e) {
+    // fall through to default
+  }
+  return 'https://i.imgur.com/AfFp7pu.png';
+};
+
+const buildPayload = ({ title, description, fields = [], color = 0x2f3136, timestamp, actorAvatar, footerText, headers = {} }) => {
   return {
     username: 'Monotone Development',
-    avatar_url: safeAvatar(actorAvatar),
+    avatar_url: safeAvatar(actorAvatar, headers),
     content: `${title} — ${description ? description.replace(/\*\*/g, '') : ''}`.trim(),
     embeds: [{
       title: title,
@@ -27,13 +43,13 @@ const buildPayload = ({ title, description, fields = [], color = 0x2f3136, times
       color: color,
       fields: fields,
       timestamp: timestamp || new Date().toISOString(),
-      thumbnail: { url: safeAvatar(actorAvatar) },
+      thumbnail: { url: safeAvatar(actorAvatar, headers) },
       footer: { text: footerText || 'Plane2Discord' }
     }]
   };
 };
 
-function handleCreated(data = {}, activity = {}) {
+function handleCreated(data = {}, activity = {}, headers = {}, eventName = '') {
   const fields = [
     { name: 'Card', value: safe(data.name), inline: true },
     { name: 'Project', value: `ID: \`${safe(data.project)}\``, inline: true },
@@ -48,12 +64,13 @@ function handleCreated(data = {}, activity = {}) {
     fields,
     color: convertColor(data.state?.color),
     timestamp: new Date(data.created_at).toISOString(),
-    actorAvatar: activity?.actor?.avatar_url,
+    actorAvatar: activity?.actor?.avatar_url || data?.actor?.avatar_url || data?.actor?.avatar,
+    headers,
     footerText: 'Card created'
   });
 }
 
-function handleDeleted(data = {}, activity = {}) {
+function handleDeleted(data = {}, activity = {}, headers = {}, eventName = '') {
   const fields = [
     { name: 'Card ID', value: safe(data.id), inline: true },
     { name: 'Deleted By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
@@ -65,12 +82,13 @@ function handleDeleted(data = {}, activity = {}) {
     fields,
     color: 0xff4444,
     timestamp: new Date().toISOString(),
-    actorAvatar: activity?.actor?.avatar_url,
+    actorAvatar: activity?.actor?.avatar_url || data?.actor?.avatar_url || data?.actor?.avatar,
+    headers,
     footerText: 'Card removed'
   });
 }
 
-function handleUpdated(data = {}, activity = {}) {
+function handleUpdated(data = {}, activity = {}, headers = {}, eventName = '') {
   const actionDesc = getActionDescription(activity);
   const fields = [
     { name: 'Card', value: safe(data.name), inline: true },
@@ -79,14 +97,33 @@ function handleUpdated(data = {}, activity = {}) {
     { name: 'Updated By', value: `${safe(activity?.actor?.display_name)}`, inline: true }
   ];
 
+  // If this is an issue_comment event, include the comment text prominently
+  let description = `**${safe(data.name)}** updated`;
+  if (eventName === 'issue_comment') {
+    // prefer stripped or explicit comment fields
+    const commentText = data?.comment_stripped || activity?.new_value || data?.comment_html || activity?.new_value;
+    if (commentText) {
+      description = `Comment: ${String(commentText).replace(/<[^>]*>/g, '')}`; // strip HTML for safety
+      // Add a field with linkable metadata if available
+      fields.unshift({ name: 'Comment', value: (data?.comment_stripped || String(commentText).slice(0, 200)), inline: false });
+    }
+  } else if (activity?.field === 'description') {
+    // show the new description (strip HTML)
+    const newDesc = activity?.new_value || data?.description || data?.comment_stripped;
+    if (newDesc) {
+      fields.unshift({ name: 'Description', value: String(newDesc).replace(/<[^>]*>/g, ''), inline: false });
+    }
+  }
+
   return buildPayload({
     title: 'Card Updated',
-    description: `**${safe(data.name)}** updated`,
+    description,
     fields,
     color: convertColor(data.state?.color),
     timestamp: new Date(data.updated_at || Date.now()).toISOString(),
-    actorAvatar: activity?.actor?.avatar_url,
-    footerText: 'Card updated'
+    actorAvatar: activity?.actor?.avatar_url || data?.actor?.avatar_url || data?.actor?.avatar,
+    footerText: 'Card updated',
+    headers
   });
 }
 
@@ -152,15 +189,16 @@ Body: ${JSON.stringify(req.body, null, 2)}
 
     // Dispatch to per-action handlers for clarity
     let discordMessage;
+    const eventName = req.body.event || req.headers['x-plane-event'];
     switch (action) {
       case 'created':
-        discordMessage = handleCreated(data, activity);
+        discordMessage = handleCreated(data, activity, req.headers, eventName);
         break;
       case 'deleted':
-        discordMessage = handleDeleted(data, activity);
+        discordMessage = handleDeleted(data, activity, req.headers, eventName);
         break;
       case 'updated':
-        discordMessage = handleUpdated(data, activity);
+        discordMessage = handleUpdated(data, activity, req.headers, eventName);
         break;
       default:
         console.log(`Unhandled action: ${action}`);
