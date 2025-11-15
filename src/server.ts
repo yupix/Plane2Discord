@@ -2,7 +2,7 @@
 import { Elysia } from 'elysia';
 import path from 'node:path';
 
-import { handleCreated } from './utils/handlers';
+import { handleCreated, handleDeleted, handleUpdated } from './utils/handlers';
 import { WebhookBody } from './types';
 import { env } from './env';
 import { write } from 'bun';
@@ -113,10 +113,10 @@ const app = new Elysia()
             discordMessage = await handleCreated(effectivePayload);
             break;
           case 'deleted':
-            // discordMessage = await handleDeleted(effectivePayload);
+            discordMessage = await handleDeleted(effectivePayload);
             break;
           case 'updated':
-            // discordMessage = await handleUpdated(effectivePayload);
+            discordMessage = await handleUpdated(effectivePayload);
             break;
           default:
             console.log('Unhandled action:', JSON.stringify(payload));

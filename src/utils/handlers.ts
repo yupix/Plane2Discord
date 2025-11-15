@@ -1,7 +1,7 @@
-import { WebhookBody, User, Activity } from "../types";
-import { APIEmbed } from "discord-api-types/v10";
+import { Activity, User, WebhookBody } from "../types";
+import { APIEmbed, APIEmbedField, EmbedType } from "discord-api-types/v10";
 import { planeClient } from "./plane";
-import { env } from '../env';
+import { env } from "../env";
 
 function getActorAvatar(user: User) {
   const host = env.PLANE_HOSTNAME;
@@ -23,7 +23,11 @@ export function getActionDescription(activity: Activity | undefined): string {
   }
 }
 
-async function getLabelNames(labelIds: string[], workspaceId: string, projectId: string): Promise<string[]> {
+async function getLabelNames(
+  labelIds: string[],
+  workspaceId: string,
+  projectId: string,
+): Promise<string[]> {
   const labelNames: string[] = [];
   for (const labelId of labelIds) {
     const labelInfo = await planeClient.labels.retrieve(
@@ -36,65 +40,201 @@ async function getLabelNames(labelIds: string[], workspaceId: string, projectId:
   return labelNames;
 }
 
+function getEmbedTitle(workspace:string, projectIdentifier:string, issueSequenceId:string, msg:string): string {
+  return `[${workspace}] ${msg} ${projectIdentifier}-${issueSequenceId}`;
+}
+
+/**
+ * 共通ロジック: 課題に関連するコンテキスト（プロジェクト、作業項目、URL）を取得する
+ */
+async function getIssueContext(
+  workspaceId: string,
+  projectId: string,
+  issueId: string,
+) {
+  // プロジェクト情報と作業項目情報を並列で取得
+  const [project, workItem] = await Promise.all([
+    planeClient.projects.retrieve(workspaceId, projectId),
+    planeClient.workItems.retrieve(workspaceId, projectId, issueId),
+  ]);
+
+  // 共通のURLを構築
+  const issueUrl =
+    `${env.PLANE_API_BASE_URL}/${workspaceId}/browse/${project.identifier}-${workItem.sequence_id}/`;
+
+  return { project, workItem, issueUrl };
+}
+
 export async function handleCreated(
   payload: WebhookBody,
 ) {
   if (payload.action !== "created") return;
 
+  // 共通の実行者（Actor）情報を先に取得
+  const actor = payload.activity.actor;
+  const actorAvatar = getActorAvatar(actor) || undefined;
+
   switch (payload.event) {
     case "issue": {
-    const labels = await getLabelNames(
-        payload.data.labels.map(label => label.id),
+      // 共通ヘルパーでコンテキストを取得
+      const { project, workItem, issueUrl } = await getIssueContext(
+        payload.workspace_id,
+        payload.data.project,
+        payload.data.id, // "issue" event は data.id を使用
+      );
+
+      // "issue" 固有のロジック (ラベル取得)
+      const labels = await getLabelNames(
+        payload.data.labels.map((label) => label.id),
         payload.workspace_id,
         payload.data.project,
       );
       console.log("Labels:", labels);
-      const workItem = await planeClient.workItems.retrieve(
-        payload.workspace_id,
-        payload.data.project,
-        payload.data.id,
-      );
-      console.log(workItem)
-      const file_url = getActorAvatar(payload.activity?.actor)!;
-      console.log(file_url);
+      console.log(workItem);
 
-    const embed: APIEmbed = {
+      // (改善点) 取得したラベルをEmbedのフィールドに追加
+      const fields: APIEmbedField[] = [];
+      if (labels.length > 0) {
+        fields.push({
+          name: "Labels",
+          value: labels.join(", "),
+          inline: true,
+        });
+      }
+
+      fields.push({
+        name: "Status",
+        value: payload.data.state.name,
+        inline: true,
+      });
+
+      fields.push({
+        name: "Priority",
+        value: payload.data.priority,
+        inline: true,
+      })
+
+      if (payload.data.assignees.length > 0) {
+        const assigneeNames = payload.data.assignees.map(assignee => assignee.display_name);
+        fields.push({
+          name: "Assignees",
+          value: assigneeNames.join(", "),
+          inline: true,
+        });
+      }
+
+      
+
+      const embed: APIEmbed = {
         title: payload.data.name,
-        // url:
         description: payload.data.description_stripped,
         author: {
-            name: payload.activity.actor.display_name,
-            icon_url: file_url,
+          name: actor.display_name,
+          icon_url: actorAvatar, // 共通変数を使用
         },
-        // 青色
-        color: 0x3498db,
-      }
+        type: EmbedType.Rich,
 
-      return {embeds: [embed]};
+
+        color: 0x3498db, // 青色
+        url: issueUrl, // 共通ヘルパーから取得
+        fields: fields, // 追加
+      };
+
+      return { embeds: [embed] };
     }
-    case "issue_comment":
-      {
-        const project = await planeClient.projects.retrieve(
+    case "issue_comment": {
+      // 共通ヘルパーでコンテキストを取得
+      const { project, workItem, issueUrl } = await getIssueContext(
         payload.workspace_id,
         payload.data.project,
+        payload.data.issue, // "issue_comment" event は data.issue を使用
       );
-        const workItem = await planeClient.workItems.retrieve(
-        payload.workspace_id,
-        payload.data.project,
-        payload.data.issue,
-      );
-        const embed: APIEmbed = {
-          title: `[${payload.workspace_id} ] New comment on issue #${project.identifier}-${workItem.sequence_id}: ${workItem.name}`,
-          description: payload.data.comment_stripped,
-        };
-        return {embeds: [embed]};
-      }
+
+      const embed: APIEmbed = {
+        title:
+          `[${payload.workspace_id}] New comment on issue #${project.identifier}-${workItem.sequence_id}: ${workItem.name}`,
+        description: payload.data.comment_stripped,
+        author: {
+          name: actor.display_name,
+          icon_url: actorAvatar, // 共通変数を使用
+        },
+        color: 0x8eda8e, // 緑色
+        url: issueUrl, // 共通ヘルパーから取得
+      };
+      return { embeds: [embed] };
+    }
 
     default:
       break;
   }
+}
 
+export function handleDeleted(
+  data: WebhookBody,
+) {
+  if (data.action !== "deleted") return;
 
+  const actor = data.activity.actor;
+  const actorAvatar = getActorAvatar(actor) || undefined;
+  const embed: APIEmbed = {
+    title: `Card Deleted`,
+    description: `Deleted issue ID: ${data.data.id}`,
+    author: {
+      name: actor.display_name,
+      icon_url: actorAvatar
+    },
+    color: 0xff4444,
+  };
+  return { embeds: [embed] };
+}
+
+export async function handleUpdated(
+  data: WebhookBody,
+) {
+  if (data.action !== "updated") return;
+
+  const actor = data.activity.actor;
+  const actorAvatar = getActorAvatar(actor) || undefined;
+  const fields: APIEmbedField[] = [];
+
+  const { project, workItem, issueUrl } = await getIssueContext(
+        data.workspace_id,
+        data.data.project,
+        data.data.id, // "issue" event は data.id を使用
+      ); 
+
+  fields.push({
+    name: data.activity.field || "Update",
+    value: `Changed from "${data.activity.old_value}" to "${data.activity.new_value}"`,
+    inline: true,
+  })
+
+  let title = `Card Updated`;
+
+  // stateがdoneになった場合は緑色、in-progressなら黄色、その他は青色にする
+  let color = 0x3498db; // デフォルトは青色
+  if (data.activity.field === "state") {
+    if (String(data.activity.new_value).toLowerCase() === "done") {
+      color = 0x8eda8e; // 緑色
+      title = `Issue Completed`;
+    } else if (String(data.activity.new_value).toLowerCase() === "in-progress") {
+      color = 0xffd700; // 黄色
+  
+    }
+  }
+
+  const embed: APIEmbed = {
+    title: getEmbedTitle(data.workspace_id, project.identifier!, workItem.sequence_id.toString(), title),
+    description: `Updated issue ID: ${data.data.id}`,
+    fields: fields,
+    color: color, // 色を変数に変更
+    author: {
+      name: actor.display_name,
+      icon_url: actorAvatar
+    },
+    url: issueUrl,
+  }
+  return { embeds: [embed] };
 }
 
 // export function handleDeleted(
